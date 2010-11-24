@@ -156,7 +156,9 @@ Puppet::Type.type(:user).provide :aixuseradd do
         Puppet.debug(getinfo() + ": " + self.lsusercmd)
         attrs = execute(self.lsusercmd)[0]
         @objectinfo = attr2hash(attrs, attribute_mapping)
+    end
     @objectinfo
+  end
 
   # Private
   # Get the groupname from its id
