@@ -11,8 +11,8 @@ Puppet::Type.type(:user).provide :aixuseradd do
   commands :add       => "/usr/bin/mkuser"
   commands :delete    => "/usr/sbin/rmuser"
   commands :modify    => "/usr/bin/chuser"
-  commands :list      => "/usr/bin/lsuser"
-  commands :lsgroup   => "/usr/bin/lsgroup"
+  commands :list      => "/usr/sbin/lsuser"
+  commands :lsgroup   => "/usr/sbin/lsgroup"
 
   #verify :gid, "GID must be an string or int of a valid group" do |value|
   #  value.is_a? String || value.is_a? Integer
@@ -35,7 +35,8 @@ Puppet::Type.type(:user).provide :aixuseradd do
   # Constants
   
   # Loadable AIX I/A module 
-  ia_module = "files"
+  self.ia_module = "files"
+  attr_accessor :ia_module
 
   # List of attributes to be ignored
   attributte_black_list = [ :time_last_login, :time_last_unsuccessful_login,
@@ -76,25 +77,25 @@ Puppet::Type.type(:user).provide :aixuseradd do
 
   #-----
   def lsusercmd(value=@resource[:name])
-    [self.class.command(:list),"-R ",ia_module, value]
+    [self.class.command(:list),"-R ",self.class.ia_module, value]
   end
 
   def lsgroupscmd(value)
-    [self.class.command(:lsgroup),"-R ",ia_module, "-a id", value]
+    [self.class.command(:lsgroup),"-R ",self.class.ia_module, "-a id", value]
   end
 
   def addcmd
-    [self.class.command(:add),"-R ",ia_module,
+    [self.class.command(:add),"-R ",self.class.ia_module,
       hash2attr(@property_hash, attribute_mapping_rev), @resource[:name]]
   end
 
   def modifycmd(attributes_hash)
-    [self.class.command(:modify),"-R ",ia_module,
+    [self.class.command(:modify),"-R ",self.class.ia_module,
       hash2attr(attributes_hash, attribute_mapping_rev), @resource[:name]]
   end
 
   def deletecmd
-    [self.class.command(:delete),"-R ",ia_module, @resource[:name]]
+    [self.class.command(:delete),"-R ",self.class.ia_module, @resource[:name]]
   end
 
 
@@ -151,10 +152,12 @@ Puppet::Type.type(:user).provide :aixuseradd do
   # Private
   # Retrieve what we can about our object
   def getinfo(refresh = false)
+    Puppet.debug("getinfo()")
     if @objectinfo.nil? or refresh == true
         # Execute lsuser, split all attributes and add them to a dict.
-        Puppet.debug(getinfo() + ": " + self.lsusercmd)
+        Puppet.debug("getinfo(): " + self.lsusercmd)
         attrs = execute(self.lsusercmd)[0]
+        Puppet.debug("getinfo()= " + attrs )
         @objectinfo = attr2hash(attrs, attribute_mapping)
     end
     @objectinfo
@@ -253,14 +256,15 @@ Puppet::Type.type(:user).provide :aixuseradd do
   # When the object is initialized, 
   # create getter/setter methods for each property our resource type supports.
   # If setter or getter already defined it will not be overwritten
-  def resource_type=(resource_type)
-    super
-    @resource_type.validproperties.each do |prop|
+  def self.mk_resource_methods
+    Puppet.debug("in mk_resource_methods")
+    [resource_type.validproperties, resource_type.parameters].flatten.each do |prop|
       next if prop == :ensure
       define_method(prop) { get(prop) || :absent} unless public_method_defined?(prop)
       define_method(prop.to_s + "=") { |*vals| set(prop, *vals) } unless public_method_defined?(prop.to_s + "=")
     end
   end
+  mk_resource_methods
 
   # Retrieve a specific value by name.
   def get(param)
@@ -274,7 +278,7 @@ Puppet::Type.type(:user).provide :aixuseradd do
     cmd = modifycmd({param => value})
     begin
       execute(cmd)
-    rescue Puppet::ExecutionFailure => detail
+    rescue Puppet::ExecutionFailure  => detail
       raise Puppet::Error, "Could not set #{param} on #{@resource.class.name}[#{@resource.name}]: #{detail}"
     end
     
