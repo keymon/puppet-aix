@@ -1,7 +1,7 @@
 # See  http://projects.puppetlabs.com/projects/puppet/wiki/Development_Provider_Development
 # for more information
 
-Puppet::Type.type(:user).provide :aixuseradd do
+Puppet::Type.type(:user).provide :aix do
   
   desc "User management for AIX! Users are managed with mkuser, rmuser, chuser"
 
@@ -30,23 +30,22 @@ Puppet::Type.type(:user).provide :aixuseradd do
 
 
   #has_features :manages_homedir, :allows_duplicates
-  has_features :manages_homedir, :manages_password_age, :manages_expiry
+  has_features :manages_homedir #, :manages_password_age, :manages_expiry
 
   # Constants
   
   # Loadable AIX I/A module 
-  self.ia_module = "files"
-  attr_accessor :ia_module
+  @@IA_MODULE = "files"
 
   # List of attributes to be ignored
-  attributte_black_list = [ :time_last_login, :time_last_unsuccessful_login,
-                              :tty_last_login, :tty_last_unsuccessful_login,
-                            :host_last_login,:host_last_unsuccessful_login,
-                            :unsuccessful_login_count ]
+  #@@attributte_black_list = [ :time_last_login, :time_last_unsuccessful_login,
+  #                          :tty_last_login, :tty_last_unsuccessful_login,
+  #                          :host_last_login,:host_last_unsuccessful_login,
+  #                          :unsuccessful_login_count ]
   
   # AIX attributes to properties mapping. Include here the valid attributes
   # to be managed by this provider
-  attribute_mapping = {
+  @@attribute_mapping = {
     #:name => :name,
     :pgrp => :gid,
     :id => :uid,
@@ -72,30 +71,31 @@ Puppet::Type.type(:user).provide :aixuseradd do
     #:role_membership => :role_membership,
     #:roles => :roles,
   }
-
-  attribute_mapping_rev = attribute_mapping.invert
+  
+  @@attribute_mapping_rev = @@attribute_mapping.invert
 
   #-----
   def lsusercmd(value=@resource[:name])
-    [self.class.command(:list),"-R ",self.class.ia_module, value]
+    [self.class.command(:list),"-R", @@IA_MODULE , value]
   end
 
   def lsgroupscmd(value)
-    [self.class.command(:lsgroup),"-R ",self.class.ia_module, "-a id", value]
+    [self.class.command(:lsgroup),"-R", @@IA_MODULE , "-a", "id", value]
   end
 
+  # Here we use the @resource.to_hash
   def addcmd
-    [self.class.command(:add),"-R ",self.class.ia_module,
-      hash2attr(@property_hash, attribute_mapping_rev), @resource[:name]]
+    [self.class.command(:add),"-R", @@IA_MODULE  ]+
+      hash2attr(@resource.to_hash, @@attribute_mapping_rev) + [@resource[:name]]
   end
 
   def modifycmd(attributes_hash)
-    [self.class.command(:modify),"-R ",self.class.ia_module,
-      hash2attr(attributes_hash, attribute_mapping_rev), @resource[:name]]
+    [self.class.command(:modify),"-R", @@IA_MODULE ]+
+      hash2attr(@property_hash, @@attribute_mapping_rev) + [@resource[:name]]
   end
 
   def deletecmd
-    [self.class.command(:delete),"-R ",self.class.ia_module, @resource[:name]]
+    [self.class.command(:delete),"-R", IA_MODULE, @resource[:name]]
   end
 
 
@@ -105,7 +105,6 @@ Puppet::Type.type(:user).provide :aixuseradd do
   # mapping hash. Only values included in mapping will be added
   # NOTE: it will ignore the first item
   def attr2hash(str, mapping=nil)
-    
     properties = {}
     attrs = []
     if !str or (attrs = str.split()[0..-1]).empty?
@@ -137,28 +136,42 @@ Puppet::Type.type(:user).provide :aixuseradd do
   # Convert the provider properties to AIX command attributes (string)
   def hash2attr(hash, mapping=nil)
     return "" unless hash 
-    attr_list = hash.map {|i|
+    attr_list = []
+    hash.each {|i|
       if mapping
         if mapping.include? i[0]
-          mapping[i[0]].to_s + "='" + i[1] + "'" 
+          # Convert arrays to list separated by commas
+          if i[1].is_a? Array
+            value = i[1].join(",")
+          else
+            value = i[1].to_s 
+          end
+          if ! value.include? " " 
+            attr_list << (mapping[i[0]].to_s + "=" + value )
+          else 
+            attr_list << ('"' + mapping[i[0]].to_s + "=" + value + '"')
+          end
         end
       else
-        i[0].to_s + "='" + i[1] + "'" 
+        attr_list << (i[0].to_s + "='" + i[1] + "'")
       end
     }
-    attr_list.join(" ")
+    attr_list
   end
 
   # Private
   # Retrieve what we can about our object
   def getinfo(refresh = false)
-    Puppet.debug("getinfo()")
     if @objectinfo.nil? or refresh == true
         # Execute lsuser, split all attributes and add them to a dict.
-        Puppet.debug("getinfo(): " + self.lsusercmd)
-        attrs = execute(self.lsusercmd)[0]
-        Puppet.debug("getinfo()= " + attrs )
-        @objectinfo = attr2hash(attrs, attribute_mapping)
+      begin
+        attrs = execute(self.lsusercmd).split("\n")[0]
+        @objectinfo = attr2hash(attrs, @@attribute_mapping)
+      rescue Puppet::ExecutionFailure => detail
+        # Print error if needed
+        Puppet.debug "aix.getinfo(): Could not find #{@resource.class.name} #{@resource.name}: #{detail}" \
+          unless detail.to_s.include? "User \"#{@resource.name}\" does not exist."
+      end
     end
     @objectinfo
   end
@@ -167,33 +180,42 @@ Puppet::Type.type(:user).provide :aixuseradd do
   # Get the groupname from its id
   def groupname_by_id(gid)
     groupname=nil
-    Puppet.debug("groupname_by_id("+gid+"): " + lsgroupscmd("ALL"))
     execute(lsgroupscmd("ALL")).each { |entry|
       attrs = attr2hash(entry)
       if attrs and attrs.include? :id and gid == attrs[:id].to_i
         groupname = entry.split(" ")[0]
       end
     }
-    Puppet.debug(groupname_by_id(gid) + "= " + groupname)
     groupname
   end
 
   # Private
   # Get the groupname from its id
   def groupid_by_name(groupname)
-    Puppet.debug("groupid_by_name("+groupname+"): " + lsgroupscmd(groupname))
-    attrs = attr2hash(execute(lsgroupscmd(groupname))[0])
-    attrs ? attrs[:id] : nil
+    attrs = attr2hash(execute(lsgroupscmd(groupname)).split("\n")[0])
+    attrs ? attrs[:id].to_i : nil
   end
 
+  # Check that a group exists and is valid
+  def verify_group(value)
+    if value.is_a? Integer or value.is_a? Fixnum  
+      groupname = groupname_by_id(value)
+      raise ArgumentError, "AIX group must be a valid existing group" unless groupname
+    else 
+      raise ArgumentError, "AIX group must be a valid existing group" unless groupid_by_name(value)
+      groupname = value
+    end
+    groupname
+  end
+  
   #-------------
   # Provider API
   # ------------
  
   # Clear out the cached values.
   def flush
-    @property_hash.clear
-    @object_info.clear
+    @property_hash.clear if @property_hash
+    @object_info.clear if @object_info
   end
 
   # Check that the user exists
@@ -257,15 +279,14 @@ Puppet::Type.type(:user).provide :aixuseradd do
   # create getter/setter methods for each property our resource type supports.
   # If setter or getter already defined it will not be overwritten
   def self.mk_resource_methods
-    Puppet.debug("in mk_resource_methods")
     [resource_type.validproperties, resource_type.parameters].flatten.each do |prop|
       next if prop == :ensure
       define_method(prop) { get(prop) || :absent} unless public_method_defined?(prop)
       define_method(prop.to_s + "=") { |*vals| set(prop, *vals) } unless public_method_defined?(prop.to_s + "=")
     end
   end
+  mk_resource_methods
   
-
   # Retrieve a specific value by name.
   def get(param)
     (hash = getinfo(false)) ? hash[param] : nil
@@ -273,6 +294,10 @@ Puppet::Type.type(:user).provide :aixuseradd do
 
   def set(param, value)
     @property_hash[symbolize(param)] = value
+    # If value does not change, do not update.    
+    if value == getinfo()[symbolize(param)]
+      return
+    end
     
     #self.class.validate(param, value)
     cmd = modifycmd({param => value})
@@ -290,21 +315,20 @@ Puppet::Type.type(:user).provide :aixuseradd do
   #- **gid**
   #    The user's primary group.  Can be specified numerically or by name.
   def gid=(value)
-    # It must be a string
-    if value.is_a? Integer
-      groupname = groupname_by_id(value)
-      raise ArgumentError, "AIX group must be a valid existing group" unless groupname
-    else 
-      raise ArgumentError, "AIX group must be a valid existing group" unless groupid_by_name(value)
-      groupname = value
-    end
+    groupname = verify_group(value)
     set(:gid, groupname)
   end
-  
+  # FIXME: For puppet gid must be a number... puppet retrieves the gid number by itself :-/
+  def gid
+    hash = getinfo(false)
+    if hash[:gid].is_a? String 
+      hash[:gid] = groupid_by_name(hash[:gid])
+    end
+  end
+
   def initialize(resource)
     super
     @objectinfo = nil
-    mk_resource_methods
   end  
 
   # We get the getters/setters for each parameter from `pi user`.
