@@ -264,7 +264,7 @@ Puppet::Type.type(:user).provide :aixuseradd do
       define_method(prop.to_s + "=") { |*vals| set(prop, *vals) } unless public_method_defined?(prop.to_s + "=")
     end
   end
-  mk_resource_methods
+  
 
   # Retrieve a specific value by name.
   def get(param)
@@ -304,6 +304,7 @@ Puppet::Type.type(:user).provide :aixuseradd do
   def initialize(resource)
     super
     @objectinfo = nil
+    mk_resource_methods
   end  
 
   # We get the getters/setters for each parameter from `pi user`.
