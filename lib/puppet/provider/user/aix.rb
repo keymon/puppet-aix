@@ -1,19 +1,45 @@
+#
+# User Puppet provider for AIX. It uses standar commands to manage users:
+#  mkuser, rmuser, lsuser, chuser
+#
+# Notes:
+# - AIX users can have expiry date defined with minute granularity, but puppet does not allow it.
+# - AIX maximum password age is in WEEKs, not days
+# - I force the compat IA module. 
+#
 # See  http://projects.puppetlabs.com/projects/puppet/wiki/Development_Provider_Development
 # for more information
+#
+# Author::    Hector Rivas Gandara <keymon@gmail.com>
+#
+# TODO::
+#  - Add new AIX specific attributes, specilly registry and SYSTEM.
+#  
+require 'tempfile'
+require 'date'
 
 Puppet::Type.type(:user).provide :aix do
-  
-  desc "User management for AIX! Users are managed with mkuser, rmuser, chuser"
+  desc "User management for AIX! Users are managed with mkuser, rmuser, chuser, lsuser"
 
+  # This will the the default provider for this platform
   defaultfor :operatingsystem => :aix
   confine :operatingsystem => :aix
 
+  # Commands that manage the element
   commands :add       => "/usr/bin/mkuser"
   commands :delete    => "/usr/sbin/rmuser"
   commands :modify    => "/usr/bin/chuser"
   commands :list      => "/usr/sbin/lsuser"
   commands :lsgroup   => "/usr/sbin/lsgroup"
+  commands :chpasswd  => "/bin/chpasswd"
 
+  # Provider features
+  #has_features :manages_homedir, :allows_duplicates
+  has_features :manages_homedir, :manages_passwords, :manages_expiry, :manages_password_age
+
+
+
+  # Attribute verification (TODO)
   #verify :gid, "GID must be an string or int of a valid group" do |value|
   #  value.is_a? String || value.is_a? Integer
   #end
@@ -22,29 +48,21 @@ Puppet::Type.type(:user).provide :aix do
   #  value !~ /\s/
   #end
 
-#def execute(commands)
-#	commands_str = (commands.is_a? Array) ? commands.join(" ") : commands
-#	output = IO.popen(commands_str)
-#	output.readlines()
-#end
-
-
-  #has_features :manages_homedir, :allows_duplicates
-  has_features :manages_homedir #, :manages_password_age, :manages_expiry
 
   # Constants
   
-  # Loadable AIX I/A module 
-  @@IA_MODULE = "files"
+  # Loadable AIX I/A module. By default we manage compat.
+  # TODO:: add a type parameter to change this
+  @@IA_MODULE = "compat"
+ 
+  # Default extra attributes to add when element is created
+  # registry=compat SYSTEM=compat: Needed if you are using LDAP by default.
+  @@DEFAULT_EXTRA_ATTRS = [ "registry=compat", " SYSTEM=compat" ]
 
-  # List of attributes to be ignored
-  #@@attributte_black_list = [ :time_last_login, :time_last_unsuccessful_login,
-  #                          :tty_last_login, :tty_last_unsuccessful_login,
-  #                          :host_last_login,:host_last_unsuccessful_login,
-  #                          :unsuccessful_login_count ]
-  
-  # AIX attributes to properties mapping. Include here the valid attributes
-  # to be managed by this provider
+  # AIX attributes to properties mapping.
+  # Include here the valid attributes to be managed by this provider.
+  # The hash should map the AIX attribute (command output) names to
+  # puppet names.
   @@attribute_mapping = {
     #:name => :name,
     :pgrp => :gid,
@@ -52,19 +70,19 @@ Puppet::Type.type(:user).provide :aix do
     :groups => :groups,
     :home => :home,
     :shell => :shell,
+    :expires => :expiry,
+    :maxage => :password_max_age,
+    :minage => :password_min_age,
+    :password => :password,
     #:comment => :comment,
     #:allowdupe => :allowdupe,
     #:auth_membership => :auth_membership,
     #:auths => :auths,
     #:ensure => :ensure,
-    #:expiry => :expiry,
     #:key_membership => :key_membership,
     #:keys => :keys,
     #:managehome => :managehome,
     #:membership => :membership,
-    #:password => :password,
-    #:password_max_age => :password_max_age,
-    #:password_min_age => :password_min_age,
     #:profile_membership => :profile_membership,
     #:profiles => :profiles,
     #:project => :project,
@@ -83,10 +101,14 @@ Puppet::Type.type(:user).provide :aix do
     [self.class.command(:lsgroup),"-R", @@IA_MODULE , "-a", "id", value]
   end
 
-  # Here we use the @resource.to_hash
-  def addcmd
+  # Here we use the @resource.to_hash to get the list of provided parameters
+  # Puppet does not call to self.<parameter>= method if it does not exists.
+  #
+  # It gets an extra list of arguments to add to the user.
+  def addcmd(extra_attrs = [])
     [self.class.command(:add),"-R", @@IA_MODULE  ]+
-      hash2attr(@resource.to_hash, @@attribute_mapping_rev) + [@resource[:name]]
+      hash2attr(@resource.to_hash, @@attribute_mapping_rev) +
+      extra_attrs + [@resource[:name]]
   end
 
   def modifycmd(attributes_hash)
@@ -95,7 +117,7 @@ Puppet::Type.type(:user).provide :aix do
   end
 
   def deletecmd
-    [self.class.command(:delete),"-R", IA_MODULE, @resource[:name]]
+    [self.class.command(:delete),"-R", @@IA_MODULE, @resource[:name]]
   end
 
 
@@ -258,6 +280,8 @@ Puppet::Type.type(:user).provide :aix do
     rescue Puppet::ExecutionFailure => detail
       raise Puppet::Error, "Could not create #{@resource.class.name} #{@resource.name}: #{detail}"
     end
+    # Reset the password if needed
+    self.password = @resource[:password] if @resource[:password]
   end 
 
   def delete
@@ -292,6 +316,7 @@ Puppet::Type.type(:user).provide :aix do
     (hash = getinfo(false)) ? hash[param] : nil
   end
 
+  # Set a property.
   def set(param, value)
     @property_hash[symbolize(param)] = value
     # If value does not change, do not update.    
@@ -321,90 +346,91 @@ Puppet::Type.type(:user).provide :aix do
   # FIXME: For puppet gid must be a number... puppet retrieves the gid number by itself :-/
   def gid
     hash = getinfo(false)
-    if hash[:gid].is_a? String 
-      hash[:gid] = groupid_by_name(hash[:gid])
+    if hash.include? :gid
+      (hash[:gid].is_a? String) ? groupid_by_name(hash[:gid]) : hash[:gid]
+    else
+      :absent
     end
   end
 
-  def initialize(resource)
-    super
-    @objectinfo = nil
-  end  
-
-  # We get the getters/setters for each parameter from `pi user`.
-  # Also from lib/puppet/type/user.rb, but is more difficult to read.
-
-  #- **comment**
-  #    A description of the user.  Generally is a user's full name.
-  #def comment=(value)
-  #end
+  #- **password**
+  #    The user's password, in whatever encrypted format the local machine
+  #    requires. Be sure to enclose any value that includes a dollar sign ($)
+  #    in single quotes (').  Requires features manages_passwords.
   #
-  #def comment
-  #end
-  
+  # Retrieve the password parsing directly the /etc/security/passwd
+  def password
+    password = :absent
+    user = @resource[:name]
+    f = File.open("/etc/security/passwd", 'r')
+    # Skip to the user
+    f.each { |l| break if l  =~ /^#{user}:\s*$/ }
+    if ! f.eof?
+      f.each { |l|
+        # If there is a new user stanza, stop
+        break if l  =~ /^\S*:\s*$/ 
+        # If the password= entry is found, return it
+        if l  =~ /^\s*password\s*=\s*(.*)$/
+          password = $1; break;
+        end
+      }
+    end
+    f.close()
+    return password
+  end 
+
+  def password=(value)
+    user = @resource[:name]
+    
+    # Puppet execute does not support strings as input, only files.
+    tmpfile = Tempfile.new('puppet_#{user}_pw')
+    tmpfile << "#{user}:#{value}\n"
+    tmpfile.close()
+
+    # Options '-e', '-c', use encrypted password and clear flags
+    # Must receibe "user:enc_password" as input
+    # command, arguments = {:failonfail => true, :combine => true}
+    cmd = [self.class.command(:chpasswd),"-R", @@IA_MODULE,
+           '-e', '-c', user]
+    begin
+      execute(cmd, {:failonfail => true, :combine => true, :stdinfile => tmpfile.path })
+    rescue Puppet::ExecutionFailure  => detail
+      raise Puppet::Error, "Could not set #{param} on #{@resource.class.name}[#{@resource.name}]: #{detail}"
+    ensure
+      tmpfile.delete()
+    end
+  end 
 
   #- **expiry**
   #    The expiry date for this user. Must be provided in
   #    a zero padded YYYY-MM-DD format - e.g 2010-02-19.  Requires features
   #    manages_expiry.
   #
-  #def expiry=(value)
-  #end
-  #
-  #def expiry
-  #end
-
-
-  #- **membership**
-  #    Whether specified groups should be treated as the only groups
-  #    of which the user is a member or whether they should merely
-  #    be treated as the minimum membership list.  Valid values are
-  #    `inclusive`, `minimum`.
-  #def membership=(value)
-  #end
-  #
-  #def membership
-  #end
-
-  #- **groups**
-  #    The groups of which the user is a member.  The primary
-  #    group should not be listed.  Multiple groups should be
-  #    specified as an array.
-  #def groups=(value)
-  #end
-  #
-  #def groups
-  #end
-
-  #- **managehome**
-  #    Whether to manage the home directory when managing the user.  Valid
-  #    values are `true`, `false`.
-  #
-  #def managehome=(value)
-  #end
-  #
-  #def managehome
-  #end
-
-  #- **home**
-  #    The home directory of the user.  The directory must be created
-  #    separately and is not currently checked for existence.
-  #def home=(value)
-  #end
-  #
-  #def home
-  #end
+  # AIX supports hours, in this format: "2010-02-20 12:21"
+  def expiry=(value)
+    # For chuser the expires parameter is a 10-character string in the MMDDhhmmyy format
+    # that is,"%m%d%H%M%y"
+    newdate = '0'
+    if value.is_a? String and value!="0000-00-00"
+      d = DateTime.parse(value, "%Y-%m-%d %H:%M")
+      newdate = d.strftime("%m%d%H%M%y")
+    end
+    set(:expiry, newdate)
+  end
   
-  #- **password**
-  #    The user's password, in whatever encrypted format the local machine
-  #    requires. Be sure to enclose any value that includes a dollar sign ($)
-  #    in single quotes (').  Requires features manages_passwords.
-  # TODO
-  #def password=(value)
-  #end
-  #
-  #def password
-  #end
+  def expiry
+    hash = getinfo(false)
+    if (hash[:expiry].is_a? String) and hash[:expiry] =~ /(..)(..)(..)(..)(..)/
+      #d= DateTime.parse("20#{$5}-#{$1}-#{$2} #{$3}:#{$4}")
+      #expiry_date = d.strftime("%Y-%m-%d %H:%M")
+      #expiry_date = d.strftime("%Y-%m-%d")
+      expiry_date = "20#{$5}-#{$1}-#{$2}"
+    else
+      expiry_date = :absent
+    end
+    expiry_date
+  end
+  
   
   #- **password_max_age**
   #    The maximum amount of time in days a password may be used before it must
@@ -424,29 +450,18 @@ Puppet::Type.type(:user).provide :aix do
   #def password_min_age
   #end
 
-  #- **shell**
-  #    The user's login shell.  The shell must exist and be
-  #executable.
-  #def shell=(value)
+  # We get the getters/setters for each parameter from `pi user`.
+  # Also from lib/puppet/type/user.rb, but is more difficult to read.
+
+  #- **comment**
+  #    A description of the user.  Generally is a user's full name.
+  #def comment=(value)
   #end
   #
-  #def shell
+  #def comment
   #end
+  # UNSUPPORTED
   
-  #- **uid**
-  #    The user ID.  Must be specified numerically.  For new users
-  #    being created, if no user ID is specified then one will be
-  #    chosen automatically, which will likely result in the same user
-  #    having different IDs on different systems, which is not
-  #    recommended.  This is especially noteworthy if you use Puppet
-  #    to manage the same user on both Darwin and other platforms,
-  #    since Puppet does the ID generation for you on Darwin, but the
-  #    tools do so on other platforms.
-  #def uid=(value)
-  #end
-  #
-  #def uid
-  #end
 
   #- **profile_membership**
   #    Whether specified roles should be treated as the only roles
@@ -499,11 +514,12 @@ Puppet::Type.type(:user).provide :aix do
   #    of which the user is a member or whether they should merely
   #    be treated as the minimum membership list.  Valid values are
   #    `inclusive`, `minimum`.
-
-  #- **name**
-  #    User name.  While limitations are determined for
-  #    each operating system, it is generally a good idea to keep to
-  #    the degenerate 8 characters, beginning with a letter.
   # UNSUPPORTED
+
+  def initialize(resource)
+    super
+    @objectinfo = nil
+  end  
+
 
 end
