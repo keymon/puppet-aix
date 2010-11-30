@@ -15,10 +15,11 @@
 # TODO::
 #  - Add new AIX specific attributes, specilly registry and SYSTEM.
 #  
+require 'puppet/provider/aixobject'
 require 'tempfile'
 require 'date'
 
-Puppet::Type.type(:user).provide :aix do
+Puppet::Type.type(:user).provide :aix, :parent => Puppet::Provider::AixObject do
   desc "User management for AIX! Users are managed with mkuser, rmuser, chuser, lsuser"
 
   # This will the the default provider for this platform
@@ -26,17 +27,15 @@ Puppet::Type.type(:user).provide :aix do
   confine :operatingsystem => :aix
 
   # Commands that manage the element
+  commands :list      => "/usr/sbin/lsuser"
   commands :add       => "/usr/bin/mkuser"
   commands :delete    => "/usr/sbin/rmuser"
   commands :modify    => "/usr/bin/chuser"
-  commands :list      => "/usr/sbin/lsuser"
-  commands :lsgroup   => "/usr/sbin/lsgroup"
   commands :chpasswd  => "/bin/chpasswd"
 
   # Provider features
   #has_features :manages_homedir, :allows_duplicates
   has_features :manages_homedir, :manages_passwords, :manages_expiry, :manages_password_age
-
 
 
   # Attribute verification (TODO)
@@ -50,11 +49,6 @@ Puppet::Type.type(:user).provide :aix do
 
 
   # Constants
-  
-  # Loadable AIX I/A module. By default we manage compat.
-  # TODO:: add a type parameter to change this
-  @@IA_MODULE = "compat"
- 
   # Default extra attributes to add when element is created
   # registry=compat SYSTEM=compat: Needed if you are using LDAP by default.
   @@DEFAULT_EXTRA_ATTRS = [ "registry=compat", " SYSTEM=compat" ]
@@ -63,7 +57,7 @@ Puppet::Type.type(:user).provide :aix do
   # Include here the valid attributes to be managed by this provider.
   # The hash should map the AIX attribute (command output) names to
   # puppet names.
-  @@attribute_mapping = {
+  attribute_mapping = {
     #:name => :name,
     :pgrp => :gid,
     :id => :uid,
@@ -90,15 +84,10 @@ Puppet::Type.type(:user).provide :aix do
     #:roles => :roles,
   }
   
-  @@attribute_mapping_rev = @@attribute_mapping.invert
 
   #-----
-  def lsusercmd(value=@resource[:name])
-    [self.class.command(:list),"-R", @@IA_MODULE , value]
-  end
-
-  def lsgroupscmd(value)
-    [self.class.command(:lsgroup),"-R", @@IA_MODULE , "-a", "id", value]
+  def lscmd(value=@resource[:name])
+    [self.class.command(:list),"-R", ia_module , value]
   end
 
   # Here we use the @resource.to_hash to get the list of provided parameters
@@ -106,237 +95,27 @@ Puppet::Type.type(:user).provide :aix do
   #
   # It gets an extra list of arguments to add to the user.
   def addcmd(extra_attrs = [])
-    [self.class.command(:add),"-R", @@IA_MODULE  ]+
-      hash2attr(@resource.to_hash, @@attribute_mapping_rev) +
+    [self.class.command(:add),"-R", ia_module  ]+
+      hash2attr(@resource.to_hash, attribute_mapping_rev) +
       extra_attrs + [@resource[:name]]
   end
 
   def modifycmd(attributes_hash)
-    [self.class.command(:modify),"-R", @@IA_MODULE ]+
-      hash2attr(@property_hash, @@attribute_mapping_rev) + [@resource[:name]]
+    [self.class.command(:modify),"-R", ia_module ]+
+      hash2attr(@property_hash, attribute_mapping_rev) + [@resource[:name]]
   end
 
   def deletecmd
-    [self.class.command(:delete),"-R", @@IA_MODULE, @resource[:name]]
+    [self.class.command(:delete),"-R", ia_module, @resource[:name]]
   end
 
-
-  #-----
-  # Parse AIX command attributes (string) and return provider hash
-  # If a mapping is provided, the keys are translated as defined in the
-  # mapping hash. Only values included in mapping will be added
-  # NOTE: it will ignore the first item
-  def attr2hash(str, mapping=nil)
-    properties = {}
-    attrs = []
-    if !str or (attrs = str.split()[0..-1]).empty?
-      return nil
-    end 
-
-    attrs.each { |i|
-      if i.include? "=" # Ignore if it does not include '='
-        (key, val) = i.split('=')
-        # Check the key
-        if !key or key.empty?
-          info "Empty key in string 'i'?"
-          continue
-        end
-        
-        # Change the key if needed
-        if mapping
-          if mapping.include? key.to_sym
-            properties[mapping[key.to_sym]] = val
-          end
-        else
-          properties[key.to_sym] = val
-        end
-      end
-    }
-    properties.empty? ? nil : properties
-  end
-
-  # Convert the provider properties to AIX command attributes (string)
-  def hash2attr(hash, mapping=nil)
-    return "" unless hash 
-    attr_list = []
-    hash.each {|i|
-      if mapping
-        if mapping.include? i[0]
-          # Convert arrays to list separated by commas
-          if i[1].is_a? Array
-            value = i[1].join(",")
-          else
-            value = i[1].to_s 
-          end
-          if ! value.include? " " 
-            attr_list << (mapping[i[0]].to_s + "=" + value )
-          else 
-            attr_list << ('"' + mapping[i[0]].to_s + "=" + value + '"')
-          end
-        end
-      else
-        attr_list << (i[0].to_s + "='" + i[1] + "'")
-      end
-    }
-    attr_list
-  end
-
-  # Private
-  # Retrieve what we can about our object
-  def getinfo(refresh = false)
-    if @objectinfo.nil? or refresh == true
-        # Execute lsuser, split all attributes and add them to a dict.
-      begin
-        attrs = execute(self.lsusercmd).split("\n")[0]
-        @objectinfo = attr2hash(attrs, @@attribute_mapping)
-      rescue Puppet::ExecutionFailure => detail
-        # Print error if needed
-        Puppet.debug "aix.getinfo(): Could not find #{@resource.class.name} #{@resource.name}: #{detail}" \
-          unless detail.to_s.include? "User \"#{@resource.name}\" does not exist."
-      end
-    end
-    @objectinfo
-  end
-
-  # Private
-  # Get the groupname from its id
-  def groupname_by_id(gid)
-    groupname=nil
-    execute(lsgroupscmd("ALL")).each { |entry|
-      attrs = attr2hash(entry)
-      if attrs and attrs.include? :id and gid == attrs[:id].to_i
-        groupname = entry.split(" ")[0]
-      end
-    }
-    groupname
-  end
-
-  # Private
-  # Get the groupname from its id
-  def groupid_by_name(groupname)
-    attrs = attr2hash(execute(lsgroupscmd(groupname)).split("\n")[0])
-    attrs ? attrs[:id].to_i : nil
-  end
-
-  # Check that a group exists and is valid
-  def verify_group(value)
-    if value.is_a? Integer or value.is_a? Fixnum  
-      groupname = groupname_by_id(value)
-      raise ArgumentError, "AIX group must be a valid existing group" unless groupname
-    else 
-      raise ArgumentError, "AIX group must be a valid existing group" unless groupid_by_name(value)
-      groupname = value
-    end
-    groupname
-  end
-  
-  #-------------
-  # Provider API
-  # ------------
- 
-  # Clear out the cached values.
-  def flush
-    @property_hash.clear if @property_hash
-    @object_info.clear if @object_info
-  end
-
-  # Check that the user exists
-  def exists?
-    !!getinfo(true) # !! => converts to bool
-  end
-
-  #- **ensure**
-  #    The basic state that the object should be in.  Valid values are
-  #    `present`, `absent`, `role`.
-  # From ensurable: exists?, create, delete
-  def ensure
-    if exists?
-      :present
-    else
-      :absent
-    end
-  end
-
-  # Return all existing instances  
-  # The method for returning a list of provider instances.  Note that it returns
-  # providers, preferably with values already filled in, not resources.
-  def instances
-    objects = []
-    execute(lsusercmd("ALL")).each { |entry|
-      objects << new(:name => entry.split(" ")[0], :ensure => :present)
-    }
-    objects
-  end
-
-  def create
-    if exists?
-      info "already exists"
-      # The object already exists
-      return nil
-    end
-
-    begin
-      execute(self.addcmd)
-    rescue Puppet::ExecutionFailure => detail
-      raise Puppet::Error, "Could not create #{@resource.class.name} #{@resource.name}: #{detail}"
-    end
-    # Reset the password if needed
-    self.password = @resource[:password] if @resource[:password]
-  end 
-
-  def delete
-    unless exists?
-      info "already absent"
-      # the object already doesn't exist
-      return nil
-    end
-
-    begin
-      execute(self.deletecmd)
-    rescue Puppet::ExecutionFailure => detail
-      raise Puppet::Error, "Could not delete #{@resource.class.name} #{@resource.name}: #{detail}"
-    end
-  end
 
   #--------------------------------
   # When the object is initialized, 
   # create getter/setter methods for each property our resource type supports.
   # If setter or getter already defined it will not be overwritten
-  def self.mk_resource_methods
-    [resource_type.validproperties, resource_type.parameters].flatten.each do |prop|
-      next if prop == :ensure
-      define_method(prop) { get(prop) || :absent} unless public_method_defined?(prop)
-      define_method(prop.to_s + "=") { |*vals| set(prop, *vals) } unless public_method_defined?(prop.to_s + "=")
-    end
-  end
-  mk_resource_methods
+  #self.mk_resource_methods
   
-  # Retrieve a specific value by name.
-  def get(param)
-    (hash = getinfo(false)) ? hash[param] : nil
-  end
-
-  # Set a property.
-  def set(param, value)
-    @property_hash[symbolize(param)] = value
-    # If value does not change, do not update.    
-    if value == getinfo()[symbolize(param)]
-      return
-    end
-    
-    #self.class.validate(param, value)
-    cmd = modifycmd({param => value})
-    begin
-      execute(cmd)
-    rescue Puppet::ExecutionFailure  => detail
-      raise Puppet::Error, "Could not set #{param} on #{@resource.class.name}[#{@resource.name}]: #{detail}"
-    end
-    
-    # Refresh de info.  
-    hash = getinfo(true)
-   
-  end
-
   #- **gid**
   #    The user's primary group.  Can be specified numerically or by name.
   def gid=(value)
@@ -390,7 +169,7 @@ Puppet::Type.type(:user).provide :aix do
     # Options '-e', '-c', use encrypted password and clear flags
     # Must receibe "user:enc_password" as input
     # command, arguments = {:failonfail => true, :combine => true}
-    cmd = [self.class.command(:chpasswd),"-R", @@IA_MODULE,
+    cmd = [self.class.command(:chpasswd),"-R", ia_module,
            '-e', '-c', user]
     begin
       execute(cmd, {:failonfail => true, :combine => true, :stdinfile => tmpfile.path })
@@ -515,11 +294,5 @@ Puppet::Type.type(:user).provide :aix do
   #    be treated as the minimum membership list.  Valid values are
   #    `inclusive`, `minimum`.
   # UNSUPPORTED
-
-  def initialize(resource)
-    super
-    @objectinfo = nil
-  end  
-
 
 end
