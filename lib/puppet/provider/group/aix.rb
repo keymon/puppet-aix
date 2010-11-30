@@ -39,7 +39,8 @@ Puppet::Type.type(:group).provide :aix, :parent => Puppet::Provider::AixObject d
   self.attribute_mapping = [
     #:name => :name,
     {:aix_attr => :id,       :puppet_prop => :gid },
-    {:aix_attr => :users,    :puppet_prop => :members},
+    {:aix_attr => :users,    :puppet_prop => :members,
+      :from => :users_from_attr},
   ]
   
   #--------------
@@ -65,6 +66,11 @@ Puppet::Type.type(:group).provide :aix, :parent => Puppet::Provider::AixObject d
 
   def deletecmd
     [self.class.command(:delete),"-R", self.class.ia_module, @resource[:name]]
+  end
+
+  # Force convert it to a list.
+  def self.users_from_attr(value)
+    (value.is_a? String) ? value.split(',') : value
   end
 
 #- **allowdupe**

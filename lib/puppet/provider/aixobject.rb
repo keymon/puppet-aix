@@ -106,7 +106,7 @@ class Puppet::Provider::AixObject < Puppet::Provider
           continue
         end
         key = key_str.to_sym
-        
+       
         if ret = self.translate_attr(key, val, mapping)
           new_key = ret[0]
           new_val = ret[1]
