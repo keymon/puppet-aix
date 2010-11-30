@@ -10,4 +10,11 @@ class puppet_aix::test_user {
 		expiry => "2010-10-21",
 		password_max_age => 4
 	}
+
+	group{'gprueba':
+		ensure => present,
+		gid => 6969,
+		members => ["prueba"]
+	}
+
 }

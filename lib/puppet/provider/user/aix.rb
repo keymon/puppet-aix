@@ -22,11 +22,19 @@ require 'date'
 Puppet::Type.type(:user).provide :aix, :parent => Puppet::Provider::AixObject do
   desc "User management for AIX! Users are managed with mkuser, rmuser, chuser, lsuser"
 
+  # Constants
+  # Default extra attributes to add when element is created
+  # registry=compat SYSTEM=compat: Needed if you are using LDAP by default.
+  @DEFAULT_EXTRA_ATTRS = [ "registry=compat", " SYSTEM=compat" ]
+
+
   # This will the the default provider for this platform
   defaultfor :operatingsystem => :aix
   confine :operatingsystem => :aix
 
   # Commands that manage the element
+  commands :lsgroup    => "/usr/sbin/lsgroup"
+  
   commands :list      => "/usr/sbin/lsuser"
   commands :add       => "/usr/bin/mkuser"
   commands :delete    => "/usr/sbin/rmuser"
@@ -34,9 +42,7 @@ Puppet::Type.type(:user).provide :aix, :parent => Puppet::Provider::AixObject do
   commands :chpasswd  => "/bin/chpasswd"
 
   # Provider features
-  #has_features :manages_homedir, :allows_duplicates
   has_features :manages_homedir, :manages_passwords, :manages_expiry, :manages_password_age
-
 
   # Attribute verification (TODO)
   #verify :gid, "GID must be an string or int of a valid group" do |value|
@@ -47,90 +53,152 @@ Puppet::Type.type(:user).provide :aix, :parent => Puppet::Provider::AixObject do
   #  value !~ /\s/
   #end
 
-
-  # Constants
-  # Default extra attributes to add when element is created
-  # registry=compat SYSTEM=compat: Needed if you are using LDAP by default.
-  @@DEFAULT_EXTRA_ATTRS = [ "registry=compat", " SYSTEM=compat" ]
-
   # AIX attributes to properties mapping.
-  # Include here the valid attributes to be managed by this provider.
-  # The hash should map the AIX attribute (command output) names to
-  # puppet names.
-  attribute_mapping = {
+  # 
+  # Valid attributes to be managed by this provider.
+  # It is a list with of hash
+  #  :aix_attr      AIX command attribute name
+  #  :puppet_prop   Puppet propertie name
+  #  :to            Method to adapt puppet property to aix command value. Optional.
+  #  :from            Method to adapt aix command value to puppet property. Optional
+  self.attribute_mapping = [
     #:name => :name,
-    :pgrp => :gid,
-    :id => :uid,
-    :groups => :groups,
-    :home => :home,
-    :shell => :shell,
-    :expires => :expiry,
-    :maxage => :password_max_age,
-    :minage => :password_min_age,
-    :password => :password,
-    #:comment => :comment,
-    #:allowdupe => :allowdupe,
-    #:auth_membership => :auth_membership,
-    #:auths => :auths,
-    #:ensure => :ensure,
-    #:key_membership => :key_membership,
-    #:keys => :keys,
-    #:managehome => :managehome,
-    #:membership => :membership,
-    #:profile_membership => :profile_membership,
-    #:profiles => :profiles,
-    #:project => :project,
-    #:role_membership => :role_membership,
-    #:roles => :roles,
-  }
+    {:aix_attr => :pgrp,     :puppet_prop => :gid,
+        :to => :gid_to_attr, :from => :gid_from_attr},
+    {:aix_attr => :id,       :puppet_prop => :uid},
+    {:aix_attr => :groups,   :puppet_prop => :groups},
+    {:aix_attr => :home,     :puppet_prop => :home},
+    {:aix_attr => :shell,    :puppet_prop => :shell},
+    {:aix_attr => :expires,  :puppet_prop => :expiry,
+        :to => :expiry_to_attr, :from => :expiry_from_attr},
+    {:aix_attr => :maxage,   :puppet_prop => :password_max_age},
+    {:aix_attr => :minage,   :puppet_prop => :password_min_age},
+  ]
   
-
-  #-----
-  def lscmd(value=@resource[:name])
-    [self.class.command(:list),"-R", ia_module , value]
+  #--------------
+  # Command lines
+  
+  def self.lsgroupscmd(value=@resource[:name])
+    [command(:lsgroup),"-R", ia_module, "-a", "id", value]
   end
 
-  # Here we use the @resource.to_hash to get the list of provided parameters
-  # Puppet does not call to self.<parameter>= method if it does not exists.
-  #
-  # It gets an extra list of arguments to add to the user.
+  def lscmd(value=@resource[:name])
+    [self.class.command(:list), "-R", self.class.ia_module , value]
+  end
+
   def addcmd(extra_attrs = [])
-    [self.class.command(:add),"-R", ia_module  ]+
-      hash2attr(@resource.to_hash, attribute_mapping_rev) +
+    # Here we use the @resource.to_hash to get the list of provided parameters
+    # Puppet does not call to self.<parameter>= method if it does not exists.
+    #
+    # It gets an extra list of arguments to add to the user.
+    [self.class.command(:add), "-R", self.class.ia_module  ]+
+      self.class.hash2attr(@resource.to_hash) +
       extra_attrs + [@resource[:name]]
   end
 
-  def modifycmd(attributes_hash)
-    [self.class.command(:modify),"-R", ia_module ]+
-      hash2attr(@property_hash, attribute_mapping_rev) + [@resource[:name]]
+  def modifycmd(hash = property_hash)
+    [self.class.command(:modify), "-R", self.class.ia_module ]+
+      self.class.hash2attr(hash) + [@resource[:name]]
   end
 
   def deletecmd
-    [self.class.command(:delete),"-R", ia_module, @resource[:name]]
+    [self.class.command(:delete),"-R", self.class.ia_module, @resource[:name]]
   end
 
+  #--------------
+  # We overwrite the create function to change the password after creation.
+  def create
+    super
+    # Reset the password if needed
+    self.password = @resource[:password] if @resource[:password]
+  end 
 
-  #--------------------------------
-  # When the object is initialized, 
-  # create getter/setter methods for each property our resource type supports.
-  # If setter or getter already defined it will not be overwritten
-  #self.mk_resource_methods
   
+  #--------------
+  # Some private functions.
+  
+  # Get the groupname from its id
+  def self.groupname_by_id(gid)
+    groupname=nil
+    execute(lsgroupscmd("ALL")).each { |entry|
+      attrs = attr2hash(entry, nil)
+      if attrs and attrs.include? :id and gid == attrs[:id].to_i
+        groupname = entry.split(" ")[0]
+      end
+    }
+    groupname
+  end
+
+  # Get the groupname from its id
+  def self.groupid_by_name(groupname)
+    attrs = attr2hash(execute(lsgroupscmd(groupname)).split("\n")[0], nil)
+    attrs ? attrs[:id].to_i : nil
+  end
+
+  # Check that a group exists and is valid
+  def self.verify_group(value)
+    if value.is_a? Integer or value.is_a? Fixnum  
+      groupname = self.groupname_by_id(value)
+      raise ArgumentError, "AIX group must be a valid existing group" unless groupname
+    else 
+      raise ArgumentError, "AIX group must be a valid existing group" unless groupid_by_name(value)
+      groupname = value
+    end
+    groupname
+  end
+  
+
+  #--------------
+  # Attribute AIX-puppet methods
+
   #- **gid**
   #    The user's primary group.  Can be specified numerically or by name.
-  def gid=(value)
-    groupname = verify_group(value)
-    set(:gid, groupname)
+  def self.gid_to_attr(value)
+    verify_group(value)
   end
-  # FIXME: For puppet gid must be a number... puppet retrieves the gid number by itself :-/
-  def gid
-    hash = getinfo(false)
-    if hash.include? :gid
-      (hash[:gid].is_a? String) ? groupid_by_name(hash[:gid]) : hash[:gid]
-    else
-      :absent
+
+  def self.gid_from_attr(value)
+    groupid_by_name(value)
+  end
+
+  #- **expiry**
+  #    The expiry date for this user. Must be provided in
+  #    a zero padded YYYY-MM-DD format - e.g 2010-02-19.  Requires features
+  #    manages_expiry.
+  #
+  # AIX supports hours, in this format: "2010-02-20 12:21"
+  def self.expiry_to_attr(value)
+    # For chuser the expires parameter is a 10-character string in the MMDDhhmmyy format
+    # that is,"%m%d%H%M%y"
+    newdate = '0'
+    if value.is_a? String and value!="0000-00-00"
+      d = DateTime.parse(value, "%Y-%m-%d %H:%M")
+      newdate = d.strftime("%m%d%H%M%y")
     end
+    newdate
   end
+  
+  def self.expiry_from_attr(value)
+    if value =~ /(..)(..)(..)(..)(..)/
+      #d= DateTime.parse("20#{$5}-#{$1}-#{$2} #{$3}:#{$4}")
+      #expiry_date = d.strftime("%Y-%m-%d %H:%M")
+      #expiry_date = d.strftime("%Y-%m-%d")
+      expiry_date = "20#{$5}-#{$1}-#{$2}"
+    else
+      Puppet.warn("Could not convert AIX expires date '#{value}' on #{@resource.class.name}[#{@resource.name}]") \
+        unless value == '0'
+      expiry_date = :absent
+    end
+    expiry_date
+  end
+
+  #--------------------------------
+  # Getter and Setter
+  
+  # When the provider is initialized, create getter/setter methods for each
+  # property our resource type supports.
+  # If setter or getter already defined it will not be overwritten
+  # Just implement them here.
 
   #- **password**
   #    The user's password, in whatever encrypted format the local machine
@@ -180,58 +248,6 @@ Puppet::Type.type(:user).provide :aix, :parent => Puppet::Provider::AixObject do
     end
   end 
 
-  #- **expiry**
-  #    The expiry date for this user. Must be provided in
-  #    a zero padded YYYY-MM-DD format - e.g 2010-02-19.  Requires features
-  #    manages_expiry.
-  #
-  # AIX supports hours, in this format: "2010-02-20 12:21"
-  def expiry=(value)
-    # For chuser the expires parameter is a 10-character string in the MMDDhhmmyy format
-    # that is,"%m%d%H%M%y"
-    newdate = '0'
-    if value.is_a? String and value!="0000-00-00"
-      d = DateTime.parse(value, "%Y-%m-%d %H:%M")
-      newdate = d.strftime("%m%d%H%M%y")
-    end
-    set(:expiry, newdate)
-  end
-  
-  def expiry
-    hash = getinfo(false)
-    if (hash[:expiry].is_a? String) and hash[:expiry] =~ /(..)(..)(..)(..)(..)/
-      #d= DateTime.parse("20#{$5}-#{$1}-#{$2} #{$3}:#{$4}")
-      #expiry_date = d.strftime("%Y-%m-%d %H:%M")
-      #expiry_date = d.strftime("%Y-%m-%d")
-      expiry_date = "20#{$5}-#{$1}-#{$2}"
-    else
-      expiry_date = :absent
-    end
-    expiry_date
-  end
-  
-  
-  #- **password_max_age**
-  #    The maximum amount of time in days a password may be used before it must
-  #    be changed  Requires features manages_password_age.
-  #def password_max_age=(value)
-  #end
-  #
-  #def password_max_age
-  #end
-
-  #- **password_min_age**
-  #    The minimum amount of time in days a password must be used before it may
-  #    be changed  Requires features manages_password_age.
-  #def password_min_age=(value)
-  #end
-  #
-  #def password_min_age
-  #end
-
-  # We get the getters/setters for each parameter from `pi user`.
-  # Also from lib/puppet/type/user.rb, but is more difficult to read.
-
   #- **comment**
   #    A description of the user.  Generally is a user's full name.
   #def comment=(value)
@@ -240,8 +256,6 @@ Puppet::Type.type(:user).provide :aix, :parent => Puppet::Provider::AixObject do
   #def comment
   #end
   # UNSUPPORTED
-  
-
   #- **profile_membership**
   #    Whether specified roles should be treated as the only roles
   #    of which the user is a member or whether they should merely
@@ -273,21 +287,17 @@ Puppet::Type.type(:user).provide :aix, :parent => Puppet::Provider::AixObject do
   #    be treated as the minimum list.  Valid values are `inclusive`,
   #    `minimum`.
   # UNSUPPORTED
-  
   #- **keys**
   #    Specify user attributes in an array of keyvalue pairs  Requires features
   #    manages_solaris_rbac.
   # UNSUPPORTED
-
   #- **allowdupe**
   #  Whether to allow duplicate UIDs.  Valid values are `true`, `false`.
   # UNSUPPORTED
-
   #- **auths**
   #    The auths the user has.  Multiple auths should be
   #    specified as an array.  Requires features manages_solaris_rbac.
   # UNSUPPORTED
-
   #- **auth_membership**
   #    Whether specified auths should be treated as the only auths
   #    of which the user is a member or whether they should merely
