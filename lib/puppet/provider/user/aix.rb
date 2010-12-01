@@ -3,7 +3,8 @@
 #  mkuser, rmuser, lsuser, chuser
 #
 # Notes:
-# - AIX users can have expiry date defined with minute granularity, but puppet does not allow it.
+# - AIX users can have expiry date defined with minute granularity,
+#   but puppet does not allow it. There is a ticket open for that (#5431)
 # - AIX maximum password age is in WEEKs, not days
 # - I force the compat IA module. 
 #
@@ -26,7 +27,6 @@ Puppet::Type.type(:user).provide :aix, :parent => Puppet::Provider::AixObject do
   # Default extra attributes to add when element is created
   # registry=compat SYSTEM=compat: Needed if you are using LDAP by default.
   @DEFAULT_EXTRA_ATTRS = [ "registry=compat", " SYSTEM=compat" ]
-
 
   # This will the the default provider for this platform
   defaultfor :operatingsystem => :aix
@@ -114,9 +114,6 @@ Puppet::Type.type(:user).provide :aix, :parent => Puppet::Provider::AixObject do
   end 
 
   
-  #--------------
-  # Some private functions.
-  
   # Get the groupname from its id
   def self.groupname_by_id(gid)
     groupname=nil
@@ -147,12 +144,7 @@ Puppet::Type.type(:user).provide :aix, :parent => Puppet::Provider::AixObject do
     groupname
   end
   
-
-  #--------------
-  # Attribute AIX-puppet methods
-
-  #- **gid**
-  #    The user's primary group.  Can be specified numerically or by name.
+  # The user's primary group.  Can be specified numerically or by name.
   def self.gid_to_attr(value)
     verify_group(value)
   end
@@ -161,12 +153,8 @@ Puppet::Type.type(:user).provide :aix, :parent => Puppet::Provider::AixObject do
     groupid_by_name(value)
   end
 
-  #- **expiry**
-  #    The expiry date for this user. Must be provided in
-  #    a zero padded YYYY-MM-DD format - e.g 2010-02-19.  Requires features
-  #    manages_expiry.
-  #
-  # AIX supports hours, in this format: "2010-02-20 12:21"
+  # The expiry date for this user. Must be provided in
+  # a zero padded YYYY-MM-DD HH:MM format 
   def self.expiry_to_attr(value)
     # For chuser the expires parameter is a 10-character string in the MMDDhhmmyy format
     # that is,"%m%d%H%M%y"
@@ -194,11 +182,9 @@ Puppet::Type.type(:user).provide :aix, :parent => Puppet::Provider::AixObject do
 
   #--------------------------------
   # Getter and Setter
-  
   # When the provider is initialized, create getter/setter methods for each
   # property our resource type supports.
   # If setter or getter already defined it will not be overwritten
-  # Just implement them here.
 
   #- **password**
   #    The user's password, in whatever encrypted format the local machine

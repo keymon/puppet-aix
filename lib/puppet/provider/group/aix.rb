@@ -68,37 +68,9 @@ Puppet::Type.type(:group).provide :aix, :parent => Puppet::Provider::AixObject d
     [self.class.command(:delete),"-R", self.class.ia_module, @resource[:name]]
   end
 
-  # Force convert it to a list.
+  # Force convert users it a list.
   def self.users_from_attr(value)
     (value.is_a? String) ? value.split(',') : value
   end
-
-#- **allowdupe**
-#    Whether to allow duplicate GIDs.  This option does not work on
-#    FreeBSD (contract to the `pw` man page).  Valid values are `true`,
-#    `false`.
-#
-#- **auth_membership**
-#    whether the provider is authoritative for group membership.
-#
-#- **ensure**
-#    Create or remove the group.  Valid values are `present`, `absent`.
-#
-#- **gid**
-#    The group ID.  Must be specified numerically.  If not
-#    specified, a number will be picked, which can result in ID
-#    differences across systems and thus is not recommended.  The
-#    GID is picked according to local system standards.
-#
-#- **members**
-#    The members of the group. For directory services where group
-#    membership is stored in the group objects, not the users.  Requires
-#    features manages_members.
-#
-#- **name**
-#    The group name.  While naming limitations vary by
-#    system, it is advisable to keep the name to the degenerate
-#    limitations, which is a maximum of 8 characters beginning with
-#a letter.
 
 end

@@ -7,25 +7,7 @@
 class Puppet::Provider::AixObject < Puppet::Provider
   desc "User management for AIX! Users are managed with mkuser, rmuser, chuser, lsuser"
 
-  #-----
-  def lscmd(value=@resource[:name])
-    raise Puppet::Error, "Method not defined #{@resource.class.name} #{@resource.name}: #{detail}"
-  end
-
-  def addcmd(extra_attrs = [])
-    raise Puppet::Error, "Method not defined #{@resource.class.name} #{@resource.name}: #{detail}"
-  end
-
-  def modifycmd(attributes_hash)
-    raise Puppet::Error, "Method not defined #{@resource.class.name} #{@resource.name}: #{detail}"
-  end
-
-  def deletecmd
-    raise Puppet::Error, "Method not defined #{@resource.class.name} #{@resource.name}: #{detail}"
-  end
-
   # Constants
-  
   # Loadable AIX I/A module for users and groups. By default we manage compat.
   # TODO:: add a type parameter to change this
   class << self 
@@ -43,6 +25,27 @@ class Puppet::Provider::AixObject < Puppet::Provider
     attr_accessor :attribute_mapping
   end
 
+  # Provider must implement these functions.
+  def lscmd(value=@resource[:name])
+    raise Puppet::Error, "Method not defined #{@resource.class.name} #{@resource.name}: #{detail}"
+  end
+
+  def addcmd(extra_attrs = [])
+    raise Puppet::Error, "Method not defined #{@resource.class.name} #{@resource.name}: #{detail}"
+  end
+
+  def modifycmd(attributes_hash)
+    raise Puppet::Error, "Method not defined #{@resource.class.name} #{@resource.name}: #{detail}"
+  end
+
+  def deletecmd
+    raise Puppet::Error, "Method not defined #{@resource.class.name} #{@resource.name}: #{detail}"
+  end
+
+  # attribute_mapping class variable, 
+  class << self 
+    attr_accessor :attribute_mapping
+  end
   def self.attribute_mapping_to
     if ! @attribute_mapping_to
       @attribute_mapping_to = {}
@@ -69,8 +72,9 @@ class Puppet::Provider::AixObject < Puppet::Provider
   end
 
   # This functions translates a key and value using the given mapping.
-  # Mapping can be nil (no translation) or a hash
+  # Mapping can be nil (no translation) or a hash with this format
   # {:key => new_key, :method => translate_method}
+  # It returns a list [key, value]
   def self.translate_attr(key, value, mapping)
     return [key, value] unless mapping
     return nil unless mapping[key]
@@ -141,7 +145,6 @@ class Puppet::Provider::AixObject < Puppet::Provider
     attr_list
   end
 
-  # Private
   # Retrieve what we can about our object
   def getinfo(refresh = false)
     if @objectinfo.nil? or refresh == true
@@ -225,7 +228,7 @@ class Puppet::Provider::AixObject < Puppet::Provider
   end
 
   #--------------------------------
-  # When the object is initialized, 
+  # Call this method when the object is initialized, 
   # create getter/setter methods for each property our resource type supports.
   # If setter or getter already defined it will not be overwritten
   def self.mk_resource_methods
@@ -243,7 +246,6 @@ class Puppet::Provider::AixObject < Puppet::Provider
     mk_resource_methods
   end
   
-  #--------------------------------
   # Retrieve a specific value by name.
   def get(param)
     (hash = getinfo(false)) ? hash[param] : nil
@@ -268,7 +270,7 @@ class Puppet::Provider::AixObject < Puppet::Provider
     # Refresh de info.  
     hash = getinfo(true)
   end
-
+ 
   def initialize(resource)
     super
     @objectinfo = nil
