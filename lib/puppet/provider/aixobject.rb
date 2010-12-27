@@ -4,7 +4,7 @@
 # Author::    Hector Rivas Gandara <keymon@gmail.com>
 #
 #  
-class Puppet::Provider::AixObject2 < Puppet::Provider
+class Puppet::Provider::AixObject < Puppet::Provider
   desc "User management for AIX! Users are managed with mkuser, rmuser, chuser, lsuser"
 
   # Constants
