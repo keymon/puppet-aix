@@ -12,8 +12,7 @@ class Puppet::Provider::AixObject < Puppet::Provider
   # TODO:: add a type parameter to change this
   class << self 
     attr_accessor :ia_module
-  end
-  
+  end  
    
   # AIX attributes to properties mapping. Subclasses should rewrite them
   # It is a list with of hash
@@ -42,7 +41,12 @@ class Puppet::Provider::AixObject < Puppet::Provider
     raise Puppet::Error, "Method not defined #{@resource.class.name} #{@resource.name}: #{detail}"
   end
 
-  # attribute_mapping class variable, 
+  # Valid attributes to be managed by this provider.
+  # It is a list with of hash
+  #  :aix_attr      AIX command attribute name
+  #  :puppet_prop   Puppet propertie name
+  #  :to            Method to adapt puppet property to aix command value. Optional.
+  #  :from            Method to adapt aix command value to puppet property. Optional
   class << self 
     attr_accessor :attribute_mapping
   end
@@ -254,6 +258,7 @@ class Puppet::Provider::AixObject < Puppet::Provider
   # Set a property.
   def set(param, value)
     @property_hash[symbolize(param)] = value
+    
     # If value does not change, do not update.    
     if value == getinfo()[param.to_sym]
       return
