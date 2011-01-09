@@ -6,8 +6,12 @@ Puppet AIX Extensions
 Description
 -----------
 
-These are some extensions to use puppet with AIX hosts. 
+These were some extensions to use puppet with AIX hosts. Now this module is obsolete.
 
-At this moment 'user' and 'group' providers are implemented.
+I deprecated this code and I added as tickets in puppet source:
+
+ - Users and groups http://projects.puppetlabs.com/issues/5432 and https://github.com/keymon/puppet/tree/feature/master/5432
+ - Mount: http://projects.puppetlabs.com/issues/5682 and https://github.com/keymon/puppet/tree/feature/master/5682
+
 
 
